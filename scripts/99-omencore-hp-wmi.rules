@@ -1,9 +1,17 @@
 # OmenCore: four-zone keyboard sysfs — permissions and brightness gate init.
 # Requires scripts/init-fourzone-keyboard.sh at /usr/local/lib/omencore/
 # (installed by build.sh or manually — see docs/LINUX_INSTALL_GUIDE.md).
+#
+# hp_wmi is force-loaded via /etc/modules-load.d, which dracut also runs
+# inside the initrd — so this rule can fire before the real root (and
+# /usr/local) is mounted. TEST== skips the RUN+= silently in that case
+# instead of logging a "failed to pin callout binary" ENOENT; the real
+# root's udev coldplug replay re-fires ACTION=="add|change" once /usr/local
+# is actually present.
 ACTION=="add|change", SUBSYSTEM=="platform", KERNEL=="hp-wmi", \
+  TEST=="/usr/local/lib/omencore/init-fourzone-keyboard.sh", \
   RUN+="/usr/local/lib/omencore/init-fourzone-keyboard.sh"
 
 # OmenCore: allow manual fan PWM writes on hp-wmi hwmon when present.
 ACTION=="add|change", SUBSYSTEM=="hwmon", ATTR{name}=="hp", \
-  RUN+="/bin/sh -c 'd=/sys/class/hwmon/%k; for f in pwm1 pwm1_enable; do [ -e $$d/$$f ] && chmod 0666 $$d/$$f; done; true'"
+  RUN+="/bin/sh -c 'd=/sys/class/hwmon/%k; for f in pwm1 pwm1_enable pwm2; do [ -e $$d/$$f ] && chmod 0666 $$d/$$f; done; true'"
