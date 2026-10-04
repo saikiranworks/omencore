@@ -276,10 +276,28 @@ public partial class FanControlViewModel : ObservableObject, IDisposable
         }
     }
 
+    // Property-change handlers fire several saves at once; serialize them so
+    // the daemon never reads a half-written or stale mode.
+    private readonly SemaphoreSlim _persistLock = new(1, 1);
+
     private async Task PersistFanStateAsync()
     {
         if (_isRestoringPreferences)
             return;
+
+        await _persistLock.WaitAsync();
+        try
+        {
+            await PersistFanStateCoreAsync();
+        }
+        finally
+        {
+            _persistLock.Release();
+        }
+    }
+
+    private async Task PersistFanStateCoreAsync()
+    {
 
         var fan = _preferences.Current.Fan;
         fan.ActiveFanProfile = ActiveFanProfile;

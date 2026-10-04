@@ -256,6 +256,13 @@ public static class UserPreferencesStore
                 })
                 .ToList();
         }
+        else if (string.Equals(fan.ActiveFanProfile, "manual", StringComparison.OrdinalIgnoreCase))
+        {
+            // Fixed-speed manual mode: keep the fans under manual PWM instead of
+            // handing them back to BIOS auto.
+            config.Fan.Profile = "manual";
+            config.Fan.Curve.Enabled = false;
+        }
         else
         {
             config.Fan.Profile = fan.ActiveFanProfile.Trim().ToLowerInvariant() switch

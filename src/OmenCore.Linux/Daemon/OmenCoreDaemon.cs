@@ -26,7 +26,7 @@ public class OmenCoreDaemon : IDisposable
     private readonly LinuxHwMonController _hwmon;
     private readonly LinuxKeyboardController _keyboard;
     private readonly LinuxBatteryController _battery;
-    private readonly FanCurveEngine? _fanCurveEngine;
+    private FanCurveEngine? _fanCurveEngine;
     private readonly CancellationTokenSource _cts = new();
     
     private bool _isRunning;
@@ -68,11 +68,44 @@ public class OmenCoreDaemon : IDisposable
         _battery = new LinuxBatteryController();
         
         // Initialize fan curve engine if custom curve is enabled
-        if (_config.Fan.Profile == "custom" && _config.Fan.Curve.Enabled)
+        if (WantsCustomCurve())
         {
-            _fanCurveEngine = new FanCurveEngine(_ec, _hwmon, _config);
-            _fanCurveEngine.OnLog += Log;
-            _fanCurveEngine.OnSpeedChange += OnFanSpeedChange;
+            _fanCurveEngine = CreateFanCurveEngine();
+        }
+    }
+
+    private bool WantsCustomCurve() =>
+        _config.Fan.Profile == "custom" && _config.Fan.Curve.Enabled;
+
+    private FanCurveEngine CreateFanCurveEngine()
+    {
+        var engine = new FanCurveEngine(_ec, _hwmon, _config);
+        engine.OnLog += Log;
+        engine.OnSpeedChange += OnFanSpeedChange;
+        return engine;
+    }
+
+    /// <summary>
+    /// Start or stop the curve engine after a config reload, so switching the
+    /// profile to/from "custom" at runtime takes effect without a daemon restart.
+    /// </summary>
+    private void SyncFanCurveEngine()
+    {
+        var wantsCurve = WantsCustomCurve();
+
+        if (wantsCurve && _fanCurveEngine == null)
+        {
+            _fanCurveEngine = CreateFanCurveEngine();
+            _ = _fanCurveEngine.StartAsync();
+        }
+        else if (!wantsCurve && _fanCurveEngine != null)
+        {
+            var engine = _fanCurveEngine;
+            _fanCurveEngine = null;
+            // The new profile decides what the fans do next; don't hand them to BIOS auto first.
+            engine.Stop(restoreAuto: false);
+            engine.Dispose();
+            ApplyFanProfile();
         }
     }
     
@@ -606,31 +639,52 @@ public class OmenCoreDaemon : IDisposable
         ReliabilityDiagnosticsStore.AppendLogLine($"[{timestamp}] {message}");
     }
     
+    private void ApplyFanProfile()
+    {
+        if (_config.Fan.Profile == "custom")
+            return;
+
+        if (_config.Fan.Profile == "manual")
+        {
+            // Fixed manual speed from the GUI. Constant keeps the stuck-fan watchdog away.
+            _configuredFanProfile = FanProfile.Constant;
+            var speed = Math.Clamp(UserPreferencesStore.LoadBestAvailable().Fan.ManualFanSpeed, 1, 100);
+
+            if (_ec.SetFanSpeedPercent(speed))
+            {
+                Log($"  Fan profile: manual ({speed}%)");
+            }
+            else
+            {
+                Log($"  Failed to apply manual fan speed {speed}%");
+            }
+            return;
+        }
+
+        var profile = _config.Fan.Profile.ToLower() switch
+        {
+            "auto" => FanProfile.Auto,
+            "silent" => FanProfile.Silent,
+            "balanced" => FanProfile.Balanced,
+            "gaming" => FanProfile.Gaming,
+            "max" => FanProfile.Max,
+            "constant" => FanProfile.Constant,
+            _ => FanProfile.Auto
+        };
+
+        _configuredFanProfile = profile;
+
+        if (_ec.SetFanProfile(profile))
+        {
+            Log($"  Fan profile: {_config.Fan.Profile}");
+        }
+    }
+
     private async Task ApplyStartupConfigAsync()
     {
         Log("Applying startup configuration...");
 
-        // Apply fan profile
-        if (_config.Fan.Profile != "custom")
-        {
-            var profile = _config.Fan.Profile.ToLower() switch
-            {
-                "auto" => FanProfile.Auto,
-                "silent" => FanProfile.Silent,
-                "balanced" => FanProfile.Balanced,
-                "gaming" => FanProfile.Gaming,
-                "max" => FanProfile.Max,
-                "constant" => FanProfile.Constant,
-                _ => FanProfile.Auto
-            };
-
-            _configuredFanProfile = profile;
-
-            if (_ec.SetFanProfile(profile))
-            {
-                Log($"  Fan profile: {_config.Fan.Profile}");
-            }
-        }
+        ApplyFanProfile();
         
         // Apply fan boost
         if (_config.Fan.Boost)
@@ -834,6 +888,7 @@ public class OmenCoreDaemon : IDisposable
         try
         {
             UserPreferencesStore.MergeIntoConfig(_config);
+            SyncFanCurveEngine();
             _fanCurveEngine?.ReloadFromConfig();
 
             var curvePreview = _config.Fan.Curve.Points.Count == 0

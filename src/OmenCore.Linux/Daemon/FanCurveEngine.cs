@@ -109,7 +109,7 @@ public class FanCurveEngine : IDisposable
         Log("Curve state reset after config reload");
     }
 
-    public void Stop()
+    public void Stop(bool restoreAuto = true)
     {
         if (!_isRunning) return;
         
@@ -117,7 +117,7 @@ public class FanCurveEngine : IDisposable
         _isRunning = false;
         
         // Restore BIOS fan control
-        if (_config.Startup.RestoreOnExit)
+        if (restoreAuto && _config.Startup.RestoreOnExit)
         {
             _ec.RestoreAutoMode();
             Log("BIOS fan control restored");
