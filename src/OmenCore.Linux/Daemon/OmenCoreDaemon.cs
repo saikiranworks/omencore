@@ -753,7 +753,10 @@ public class OmenCoreDaemon : IDisposable
 
         if (prefs.AnimationIndex > 0)
         {
-            _keyboardAnimationEngine = new KeyboardAnimationEngine(_keyboard);
+            _keyboardAnimationEngine = new KeyboardAnimationEngine(_keyboard)
+            {
+                SuspendRendering = () => _keyboardIdleMonitor?.IsDimmed == true
+            };
             if (UserPreferencesStore.TryStartKeyboardAnimation(_keyboardAnimationEngine, prefs.AnimationIndex))
                 Log($"  Keyboard software animation started (mode {prefs.AnimationIndex})");
             else

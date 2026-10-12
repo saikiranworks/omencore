@@ -34,6 +34,9 @@ public sealed class KeyboardIdleMonitor : IDisposable
 
     private long _lastActivityTicks;
     private bool _dimmed;
+
+    /// <summary>True while the backlight is dimmed for inactivity.</summary>
+    public bool IsDimmed => Volatile.Read(ref _dimmed);
     private Task? _idleLoop;
     private bool _started;
 

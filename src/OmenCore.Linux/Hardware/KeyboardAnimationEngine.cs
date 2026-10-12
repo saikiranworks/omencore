@@ -20,13 +20,24 @@ public enum KeyboardAnimationEffect
 /// </summary>
 public sealed class KeyboardAnimationEngine : IDisposable
 {
-    private const int DefaultFps = 20;
+    // Every frame is a WMI call into the kernel, so keep the rate modest. Effect
+    // speeds are defined at ReferenceFps and scaled, so this does not change how
+    // fast the animation looks.
+    private const int DefaultFps = 10;
+    private const double ReferenceFps = 20.0;
 
     private readonly LinuxKeyboardController _controller;
     private readonly object _gate = new();
     private CancellationTokenSource? _cts;
     private Task? _loop;
     private (byte R, byte G, byte B)[] _baseColors = DefaultBaseColors();
+    private (byte R, byte G, byte B)[]? _lastFrame;
+
+    /// <summary>
+    /// When set and returning true, frames are not rendered (e.g. backlight is dimmed
+    /// for inactivity), so no kernel calls are made while nobody can see the effect.
+    /// </summary>
+    public Func<bool>? SuspendRendering { get; set; }
 
     /// <summary>Effect currently being rendered, or null when idle.</summary>
     public KeyboardAnimationEffect? ActiveEffect { get; private set; }
@@ -55,6 +66,7 @@ public sealed class KeyboardAnimationEngine : IDisposable
         lock (_gate)
         {
             StopLocked(restoreBaseColors: false);
+            _lastFrame = null;
 
             if (_controller.TryGetAllZoneColors(out var colors))
                 _baseColors = colors;
@@ -98,6 +110,8 @@ public sealed class KeyboardAnimationEngine : IDisposable
         _loop = null;
         ActiveEffect = null;
 
+        _lastFrame = null;
+
         if (restoreBaseColors)
             ApplyBaseColors();
     }
@@ -116,13 +130,16 @@ public sealed class KeyboardAnimationEngine : IDisposable
     {
         var period = TimeSpan.FromSeconds(1.0 / Math.Clamp(fps, 1, 60));
         using var timer = new PeriodicTimer(period);
+        var stepScale = ReferenceFps / Math.Clamp(fps, 1, 60);
         int step = 0;
 
         try
         {
             while (await timer.WaitForNextTickAsync(ct))
             {
-                RenderFrame(effect, step);
+                if (SuspendRendering?.Invoke() != true)
+                    RenderFrame(effect, step * stepScale);
+
                 step++;
             }
         }
@@ -132,7 +149,7 @@ public sealed class KeyboardAnimationEngine : IDisposable
         }
     }
 
-    private void RenderFrame(KeyboardAnimationEffect effect, int step)
+    private void RenderFrame(KeyboardAnimationEffect effect, double step)
     {
         var frame = new (byte R, byte G, byte B)[4];
 
@@ -164,11 +181,19 @@ public sealed class KeyboardAnimationEngine : IDisposable
             break;
         }
 
-        _controller.SetAllZoneColors(
+        // Skip the kernel call when the quantized frame did not change (common at
+        // the ends of a breath and with 8-bit colors).
+        if (_lastFrame is not null && _lastFrame.AsSpan().SequenceEqual(frame))
+            return;
+
+        if (_controller.SetAllZoneColors(
             frame[0].R, frame[0].G, frame[0].B,
             frame[1].R, frame[1].G, frame[1].B,
             frame[2].R, frame[2].G, frame[2].B,
-            frame[3].R, frame[3].G, frame[3].B);
+            frame[3].R, frame[3].G, frame[3].B))
+        {
+            _lastFrame = frame;
+        }
     }
 
     private static (byte R, byte G, byte B) HsvToRgb(double h, double s, double v)
