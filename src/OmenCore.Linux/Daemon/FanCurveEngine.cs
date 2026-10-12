@@ -21,11 +21,13 @@ public class FanCurveEngine : IDisposable
     private readonly OmenCoreConfig _config;
     private readonly CancellationTokenSource _cts = new();
     
+    private const int CriticalTempC = 90;
+
     private int _lastTargetSpeed = -1;
-    private int _committedCurveTarget = -1;
-    private int _lastCommittedMaxTemp;
-    private int _pendingCurveTarget = -1;
-    private DateTime _pendingTargetSinceUtc = DateTime.MinValue;
+    private bool _hasEffectiveTemp;
+    private int _effectiveTemp;
+    private int _pendingDirection;
+    private DateTime _pendingSinceUtc = DateTime.MinValue;
     private bool _isRunning;
     private bool _lastBatteryState;
     private IReadOnlyList<FanCurvePoint>? _sortedCurvePoints;
@@ -100,10 +102,9 @@ public class FanCurveEngine : IDisposable
     public void ReloadFromConfig()
     {
         _lastTargetSpeed = -1;
-        _committedCurveTarget = -1;
-        _lastCommittedMaxTemp = 0;
-        _pendingCurveTarget = -1;
-        _pendingTargetSinceUtc = DateTime.MinValue;
+        _hasEffectiveTemp = false;
+        _pendingDirection = 0;
+        _pendingSinceUtc = DateTime.MinValue;
         _curveCacheKey = null;
         _sortedCurvePoints = null;
         Log("Curve state reset after config reload");
@@ -147,53 +148,19 @@ public class FanCurveEngine : IDisposable
         // Use the higher of CPU/GPU temps for fan control
         var maxTemp = Math.Max(cpuTemp, gpuTemp);
         
-        // Calculate target speed from curve
-        var curveTarget = CalculateSpeedFromCurve(maxTemp);
+        // The curve is evaluated at an "effective" temperature that only follows the
+        // real reading once it has moved by at least the hysteresis, in the same
+        // direction, for the ramp delay. The trend is judged on the live temperature
+        // each poll, so jitter in the resulting fan target cannot keep restarting
+        // the timer (which used to leave the fans stuck high after a load spike).
+        UpdateEffectiveTemp(maxTemp);
+
+        var curveTarget = CalculateSpeedFromCurve(_effectiveTemp);
         
         // Apply battery-aware reduction (but keep minimum if temp is critical)
         if (BatteryAwareEnabled && _lastBatteryState && maxTemp < 85)
         {
             curveTarget = Math.Max(20, curveTarget - BatterySpeedReduction);
-        }
-
-        if (curveTarget != _committedCurveTarget)
-        {
-            // Temperature dead-zone: ignore small fluctuations around the last committed reading
-            if (_committedCurveTarget >= 0)
-            {
-                var hysteresis = _config.Fan.Curve.Hysteresis;
-                if (Math.Abs(maxTemp - _lastCommittedMaxTemp) < hysteresis)
-                {
-                    _pendingCurveTarget = -1;
-                    return;
-                }
-            }
-
-            // Time-based confirmation: wait for sustained temperature before changing fan speed
-            var isIncrease = _committedCurveTarget < 0 || curveTarget > _committedCurveTarget;
-            var rampDelaySeconds = isIncrease
-                ? _config.Fan.Curve.RampUpDelaySeconds
-                : _config.Fan.Curve.RampDownDelaySeconds;
-
-            if (rampDelaySeconds > 0)
-            {
-                var now = DateTime.UtcNow;
-                if (_pendingCurveTarget != curveTarget)
-                {
-                    _pendingCurveTarget = curveTarget;
-                    _pendingTargetSinceUtc = now;
-                    return;
-                }
-
-                if ((now - _pendingTargetSinceUtc).TotalSeconds < rampDelaySeconds)
-                {
-                    return;
-                }
-            }
-
-            _committedCurveTarget = curveTarget;
-            _lastCommittedMaxTemp = maxTemp;
-            _pendingCurveTarget = -1;
         }
 
         var targetSpeed = curveTarget;
@@ -225,6 +192,48 @@ public class FanCurveEngine : IDisposable
         await Task.CompletedTask;
     }
     
+    private void UpdateEffectiveTemp(int maxTemp)
+    {
+        if (!_hasEffectiveTemp)
+        {
+            _effectiveTemp = maxTemp;
+            _hasEffectiveTemp = true;
+            _pendingDirection = 0;
+            return;
+        }
+
+        var hysteresis = Math.Max(1, _config.Fan.Curve.Hysteresis);
+        var delta = maxTemp - _effectiveTemp;
+        var direction = delta >= hysteresis ? 1 : delta <= -hysteresis ? -1 : 0;
+
+        if (direction == 0)
+        {
+            _pendingDirection = 0;
+            return;
+        }
+
+        var now = DateTime.UtcNow;
+        if (_pendingDirection != direction)
+        {
+            _pendingDirection = direction;
+            _pendingSinceUtc = now;
+        }
+
+        var delaySeconds = direction > 0
+            ? _config.Fan.Curve.RampUpDelaySeconds
+            : _config.Fan.Curve.RampDownDelaySeconds;
+
+        // Never sit on a delay while the CPU is near its limit.
+        if (direction > 0 && maxTemp >= CriticalTempC)
+            delaySeconds = 0;
+
+        if ((now - _pendingSinceUtc).TotalSeconds >= delaySeconds)
+        {
+            _effectiveTemp = maxTemp;
+            _pendingDirection = 0;
+        }
+    }
+
     /// <summary>
     /// Calculate fan speed from curve based on temperature.
     /// Uses linear interpolation between curve points.
