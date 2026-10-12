@@ -714,32 +714,54 @@ public class OmenCoreDaemon : IDisposable
         
         // Apply keyboard settings (static palette + software animation when configured).
         if (_config.Keyboard.Enabled)
-        {
-            var prefs = UserPreferencesStore.LoadCanonical().Keyboard;
-            if (UserPreferencesStore.ApplyKeyboard(_keyboard, prefs))
-            {
-                Log($"  Keyboard lighting: Z1 #{prefs.Zone1R:X2}{prefs.Zone1G:X2}{prefs.Zone1B:X2}, " +
-                    $"brightness {prefs.Brightness}%, animation={prefs.AnimationIndex}");
-            }
+            ApplyKeyboardPreferences();
 
-            if (_keyboard.HasFourZoneAnimationControl)
-                _keyboard.SetAnimationMode(0);
-
-            if (prefs.AnimationIndex > 0)
-            {
-                _keyboardAnimationEngine = new KeyboardAnimationEngine(_keyboard);
-                if (UserPreferencesStore.TryStartKeyboardAnimation(_keyboardAnimationEngine, prefs.AnimationIndex))
-                    Log($"  Keyboard software animation started (mode {prefs.AnimationIndex})");
-                else
-                {
-                    _keyboardAnimationEngine.Dispose();
-                    _keyboardAnimationEngine = null;
-                }
-            }
-        }
-        
         Log("Startup configuration applied");
         await Task.CompletedTask;
+    }
+
+    // Keyboard preferences last applied by the daemon, so a config reload only touches the
+    // lighting when it actually changed (the same file also carries fan settings).
+    private string? _appliedKeyboardSignature;
+
+    private static string KeyboardSignature(KeyboardLightingPreferences kb) =>
+        $"{kb.Brightness}|{kb.AnimationIndex}|" +
+        $"{kb.Zone1R},{kb.Zone1G},{kb.Zone1B}|{kb.Zone2R},{kb.Zone2G},{kb.Zone2B}|" +
+        $"{kb.Zone3R},{kb.Zone3G},{kb.Zone3B}|{kb.Zone4R},{kb.Zone4G},{kb.Zone4B}";
+
+    /// <summary>
+    /// Applies the static palette from user preferences and starts the software animation when
+    /// one is configured. A running animation is stopped first; otherwise it keeps rewriting the
+    /// zone colors every frame and the new settings never become visible.
+    /// </summary>
+    private void ApplyKeyboardPreferences()
+    {
+        var prefs = UserPreferencesStore.LoadCanonical().Keyboard;
+        _appliedKeyboardSignature = KeyboardSignature(prefs);
+
+        _keyboardAnimationEngine?.Dispose();
+        _keyboardAnimationEngine = null;
+
+        if (UserPreferencesStore.ApplyKeyboard(_keyboard, prefs))
+        {
+            Log($"  Keyboard lighting: Z1 #{prefs.Zone1R:X2}{prefs.Zone1G:X2}{prefs.Zone1B:X2}, " +
+                $"brightness {prefs.Brightness}%, animation={prefs.AnimationIndex}");
+        }
+
+        if (_keyboard.HasFourZoneAnimationControl)
+            _keyboard.SetAnimationMode(0);
+
+        if (prefs.AnimationIndex > 0)
+        {
+            _keyboardAnimationEngine = new KeyboardAnimationEngine(_keyboard);
+            if (UserPreferencesStore.TryStartKeyboardAnimation(_keyboardAnimationEngine, prefs.AnimationIndex))
+                Log($"  Keyboard software animation started (mode {prefs.AnimationIndex})");
+            else
+            {
+                _keyboardAnimationEngine.Dispose();
+                _keyboardAnimationEngine = null;
+            }
+        }
     }
 
     private void StartKeyboardIdleMonitor()
@@ -890,6 +912,12 @@ public class OmenCoreDaemon : IDisposable
             UserPreferencesStore.MergeIntoConfig(_config);
             SyncFanCurveEngine();
             _fanCurveEngine?.ReloadFromConfig();
+
+            if (_config.Keyboard.Enabled &&
+                KeyboardSignature(UserPreferencesStore.LoadCanonical().Keyboard) != _appliedKeyboardSignature)
+            {
+                ApplyKeyboardPreferences();
+            }
 
             var curvePreview = _config.Fan.Curve.Points.Count == 0
                 ? "(none)"
