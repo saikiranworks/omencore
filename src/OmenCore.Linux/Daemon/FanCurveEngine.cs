@@ -142,8 +142,8 @@ public class FanCurveEngine : IDisposable
         }
         
         // Get temperatures from multiple sources
-        var cpuTemp = _ec.GetCpuTemperature() ?? _hwmon.GetCpuTemperature() ?? 0;
-        var gpuTemp = _ec.GetGpuTemperature() ?? _hwmon.GetGpuTemperature() ?? 0;
+        var cpuTemp = LinuxTelemetryResolver.GetCpuTemperature(_ec, _hwmon)?.Temperature ?? 0;
+        var gpuTemp = LinuxTelemetryResolver.GetGpuTemperature(_ec, _hwmon)?.Temperature ?? 0;
         
         // Use the higher of CPU/GPU temps for fan control
         var maxTemp = Math.Max(cpuTemp, gpuTemp);

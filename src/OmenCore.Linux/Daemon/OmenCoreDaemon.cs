@@ -253,8 +253,8 @@ public class OmenCoreDaemon : IDisposable
                 // the custom fan-curve engine is driving the fans. Previously the
                 // whole block was skipped in curve mode, disabling the thermal
                 // restore, performance hold and reliability snapshots entirely.
-                var cpuTemp = _ec.GetCpuTemperature() ?? _hwmon.GetCpuTemperature() ?? 0;
-                var gpuTemp = _ec.GetGpuTemperature() ?? _hwmon.GetGpuTemperature() ?? 0;
+                var cpuTemp = LinuxTelemetryResolver.GetCpuTemperature(_ec, _hwmon)?.Temperature ?? 0;
+                var gpuTemp = LinuxTelemetryResolver.GetGpuTemperature(_ec, _hwmon)?.Temperature ?? 0;
                 var (fan1, fan2) = _ec.GetFanSpeeds();
 
                 // Thermal watchdog: re-apply performance mode if BIOS reset it after throttle

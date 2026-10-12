@@ -429,8 +429,9 @@ public static class FanCommand
                 Console.WriteLine($"║  EC Access:     {"Blocked (safety)",-27} ║");
             
             // Try to get temperatures
-            var cpuTemp = ec.GetCpuTemperature();
-            var gpuTemp = ec.GetGpuTemperature();
+            var hwmon = new LinuxHwMonController();
+            var cpuTemp = LinuxTelemetryResolver.GetCpuTemperature(ec, hwmon)?.Temperature;
+            var gpuTemp = LinuxTelemetryResolver.GetGpuTemperature(ec, hwmon)?.Temperature;
             if (cpuTemp > 0 || gpuTemp > 0)
             {
                 Console.WriteLine("╠══════════════════════════════════════════════╣");

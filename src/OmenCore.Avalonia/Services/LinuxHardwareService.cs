@@ -136,8 +136,8 @@ public class LinuxHardwareService : IHardwareService, IDisposable
         {
             var status = new HardwareStatus();
 
-            // Read CPU temperature from hwmon
-            status.CpuTemperature = await ReadTemperatureAsync("coretemp") / 1000.0;
+            // Use the same package sensor priority as CLI status and daemon fan control.
+            status.CpuTemperature = LinuxTelemetryResolver.GetCpuTemperature(_ec.Value, _hwmon.Value)?.Temperature ?? 0;
 
             // Read GPU temperature (NVIDIA or AMD)
             status.GpuTemperature = await ReadGpuTemperatureAsync() / 1000.0;
@@ -1098,93 +1098,6 @@ public class LinuxHardwareService : IHardwareService, IDisposable
         }
 
         return null;
-    }
-
-    private static async Task<int> ReadCoretempackageTemp(string hwmonDir)
-    {
-        try
-        {
-            foreach (var tempFile in Directory.GetFiles(hwmonDir, "temp*_input"))
-            {
-                var labelFile = tempFile.Replace("_input", "_label");
-                if (!File.Exists(labelFile)) continue;
-                var label = (await File.ReadAllTextAsync(labelFile)).Trim();
-                if (label.StartsWith("Package", StringComparison.OrdinalIgnoreCase))
-                {
-                    var tempStr = await File.ReadAllTextAsync(tempFile);
-                    if (int.TryParse(tempStr.Trim(), out var temp) && temp > 0)
-                        return temp;
-                }
-            }
-        }
-        catch { }
-        return 0;
-    }
-
-    private static async Task<int> ReadTemperatureAsync(string type)
-    {
-        try
-        {
-            foreach (var hwmon in Directory.GetDirectories(HWMON_BASE))
-            {
-                try
-                {
-                    var namePath = Path.Combine(hwmon, "name");
-                    if (!File.Exists(namePath)) continue;
-                    
-                    var name = (await File.ReadAllTextAsync(namePath)).Trim().ToLower();
-                    
-                    // Match multiple CPU temperature sensor names
-                    // Intel: coretemp, AMD: k10temp, zenpower, amd_energy
-                    bool isCpuSensor = type == "coretemp" && 
-                        (name == "coretemp" || name == "k10temp" || name == "zenpower" || 
-                         name == "amd_energy" || name.Contains("cpu") || name.Contains("tctl"));
-                    
-                    if (isCpuSensor || name == type)
-                    {
-                        // For Intel coretemp: prefer "Package id 0" over individual cores
-                        if (name == "coretemp")
-                        {
-                            var packageTemp = await ReadCoretempackageTemp(hwmon);
-                            if (packageTemp > 0) return packageTemp;
-                        }
-
-                        // AMD / fallback: try common temp file names
-                        var tempFiles = new[] { "temp1_input", "temp2_input", "temp3_input", "Tctl" };
-                        foreach (var tempFile in tempFiles)
-                        {
-                            var tempPath = Path.Combine(hwmon, tempFile);
-                            if (File.Exists(tempPath))
-                            {
-                                var tempStr = await File.ReadAllTextAsync(tempPath);
-                                if (int.TryParse(tempStr.Trim(), out var temp) && temp > 0)
-                                    return temp;
-                            }
-                        }
-                    }
-                }
-                catch { }
-            }
-        }
-        catch { }
-        
-        // Fallback: Try to find any temperature sensor
-        try
-        {
-            foreach (var hwmon in Directory.GetDirectories(HWMON_BASE))
-            {
-                var tempFiles = Directory.GetFiles(hwmon, "temp*_input");
-                foreach (var tempFile in tempFiles)
-                {
-                    var tempStr = await File.ReadAllTextAsync(tempFile);
-                    if (int.TryParse(tempStr.Trim(), out var temp) && temp > 1000 && temp < 150000)
-                        return temp; // Valid temperature in millidegrees
-                }
-            }
-        }
-        catch { }
-        
-        return 0;
     }
 
     private async Task<int> ReadGpuTemperatureAsync()
